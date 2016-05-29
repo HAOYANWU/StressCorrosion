@@ -1,0 +1,556 @@
+;fname: psc.fis  %fist%\2d_3d, PFC2D/3D
+;
+; PURPOSE:  FISH functions comprising the PFC parallel-bonded
+;           stress-corrosion environment.
+;
+; ===================================================================
+; PUBLIC FUNCTIONS
+; ===================================================================
+;
+def psc_init
+;
+; ----- Initialize the PSC-model.
+;
+; INPUT: psc_beta1 - beta1 parameter of PSC-model
+;        psc_beta2 - beta2 parameter of PSC-model
+;        psc_sigA  - activation stress of PSC-model (enter as positive)
+;                       (All three parameters are global.)
+;        psc_thick - thickness of cylinders (default: 1.0)
+;        psc_imp   - implosion multiplier
+;                      minimum allowed value for pb_rad(pbp)
+;        psc_sr    - boolean, defines use of [psc_eq_lim] as
+;                      0: {SET solve_ratio max
+;                          SOLVE ratio=@psc_eq_lim}
+;                      1: SOLVE aver=1e-30 max=@psc_eq_lim
+;
+; OUTPUT: psc_time   - accumulated sc-time
+;         psc_impnum - number of pbonds broken from condition:
+;                        pb_rad(pbp) < [psc_imp]
+;
+  _psc_chk_mfac
+  if psc_thick = 0 then  ; default
+    psc_thick = 1.0
+  end_if
+  if psc_imp = 0 then  ; default
+    psc_imp = 0.01
+  end_if
+  psc_time = 0.0
+  psc_impnum = 0
+  ;
+  _nc = 0
+  command
+    set fishcall #FC_PB_DEL _psc_formpb
+  end_command
+end
+; ====================================
+def _psc_chk_mfac
+;
+; ----- Confirm that all pbonds have moment-contribution factor of 1.0.
+;       The PSC model requires this to be the case. This restriction could
+;       be relaxed by modifying Eqs. (18) & (20) in Potyondy (2007) to
+;       include this factor.
+;
+;       Potyondy, D. (2007) "Simulating Stress Corrosion with a Bonded-
+;       Particle Model for Rock," Int. J. Rock Mech. & Min. Sci., 44(5),
+;       677-691.
+;
+  cp = contact_head
+  loop while cp # null
+    if md_pbond = 1 then  ; parallel bond present
+      pbp = c_pb(cp)
+      _mfac = pb_mfac(pbp)
+      if abs( _mfac - 1.0 ) > 1e-10 then
+        _str = 'PSC_Model requires all pbond MomentContribFacs = 1.0, '
+        _str = _str + 'but at least one of them is not 1.0.'
+        error = _str
+      end_if
+    end_if
+    cp = c_next(cp)
+  end_loop
+end
+; ====================================
+def _psc_formpb
+  _nc = 0  ; trigger new sc-timestep estimate
+end
+; ===================================================================
+def psc_solve
+;
+; ----- Move forward in stress-corrosion time until the model reaches
+;         a specified stopping condition (psc_status).  Size of sc-timesteps
+;         are kept constant at specified value, or chosen automatically.
+;
+; INPUT: psc_dt_fix - timestep-estimation flag
+;                        (==0, f([psc_dt_nc],[psc_dt_fs])
+;                         !=0, user-defined [psc_dt])
+;        psc_dt     - size of fixed sc-timestep
+;        psc_dt_nc  - subinterval-cycle estimate,
+;                       upper bound to number of substeps until first pbond
+;                       breaks ([_nc] is true substep number)
+;        psc_dt_fs - subinterval-acceleration factor,
+;                      acceleration factor during substepping
+;        psc_sl_tlim  - stopping condition: value of [psc_time]
+;        psc_sl_limit - function: user-defined stopping limit
+; I/O:   psc_skip_eq  - skip call to [psc_eq] on first pass through loop
+;
+; OUTPUT: psc_status (stopping conditions checked in this order) -
+;            (12) system may be failing (cannot reobtain equil.)
+;            (11) active limit reached (all pbonds below sigA)
+;            (10) time limit reached
+;             (9) user-defined limit reached [psc_sl_limit]
+;            (-1) premature exit of this function
+;
+  psc_status = -1
+  _psc_solve_defaults
+  loop while 1 # 0
+    if psc_skip_eq = 1 then
+      psc_skip_eq = 0
+    else
+      psc_eq  ;{o: psc_eq_status}
+      if psc_eq_status = 1 then
+        psc_status = 12
+        ii=out('[psc_solve]: system may be failing (cannot reobtain equil.)')
+        exit
+      end_if
+    end_if
+    ;
+    if _psc_solve_limits = 1 then  ; {o: psc_status of 11,10,9}
+      exit
+    end_if
+    _psc_tincr = _psc_solve_delt
+    psc_time = psc_time + _psc_tincr
+    _psc_corrode_pbonds  ; {i: _psc_tincr}
+  end_loop
+end
+; ====================================
+def _psc_solve_delt
+;
+; INPUT: _nc
+;        {psc_dt_fix, psc_dt, psc_dt_nc, psc_dt_fs}
+;
+  if psc_dt_fix = 0 then
+    if _nc = 0 then  ; first time
+      _delt = _psc_incr0
+      if _delt = -1.0 then
+        error = '[_psc_solve_delt]: cannot estimate new sc-timestep.'
+      end_if
+      _delt = (1.0 / psc_dt_nc) * _delt
+    else
+      if _psc_trigger = 1 then
+        _delt = psc_dt_fs*_delt
+      end_if
+    end_if
+    _nc = _nc + 1
+  else
+    _delt = psc_dt
+  end_if
+  _psc_solve_delt = _delt
+end
+; ====================================
+def _psc_trigger
+;
+; Return (1) iff [_nc] is integer multiple of [psc_dt_nc].
+;
+  if psc_dt_nc >= 1.0 then
+    _intvl = int(psc_dt_nc)
+  else
+    _intvl = int(1)
+  end_if
+  _rem = _nc - (int(_nc)/_intvl)*_intvl
+  if _rem = 0 then
+    _psc_trigger = 1
+  else
+    _psc_trigger = 0
+  end_if
+end
+; ====================================
+def _psc_solve_defaults
+  if psc_sl_tlim = 0 then  ; default
+    psc_sl_tlim = 1e100
+  end_if
+  if psc_dt_nc = 0 then  ; default
+    psc_dt_nc = 4
+  end_if
+  if psc_dt_fs = 0 then  ; default
+    psc_dt_fs = 2.0
+  end_if
+  if psc_eq_lim = 0 then  ; default
+    psc_eq_lim = 1e-4
+  end_if
+  if psc_eq_steps = 0 then  ; default
+    psc_eq_steps = 50000
+  end_if
+end
+; ====================================
+def _psc_solve_limits
+  if _psc_active = 0 then
+    psc_status = 11
+    _psc_solve_limits = 1
+    ii=out('[psc_solve]: active limit reached (all pbonds below sigA)')
+    exit
+  end_if
+  if psc_time >= psc_sl_tlim then
+    psc_status = 10
+    _psc_solve_limits = 1
+    ii=out('[psc_solve]: time limit reached')
+    exit
+  end_if
+  if psc_sl_limit = 1 then
+    psc_status = 9
+    _psc_solve_limits = 1
+    ii=out('[psc_solve]: user-defined limit reached')
+    exit
+  end_if
+  _psc_solve_limits = 0
+end
+; ====================================
+def psc_smr
+;
+; ----- If psc_sr=1, then returns "solve-ratio" being used by PSC system.
+;       If psc_sr=0, then this ratio is returned by HIST DIAG SMR".
+;
+  _psc_smr = 0.0
+  if psc_sr = 1 then
+    if max_cforce # 0.0 then
+      _psc_smr = max_unbal / max_cforce
+    else
+      _psc_smr = 0.0
+    end_if
+  end_if
+  psc_smr = _psc_smr
+end
+; ====================================
+def psc_eq
+;
+; ----- Attempt to reach equilibrium.
+;
+; INPUT: {psc_eq_lim, psc_eq_steps, psc_sr}
+;
+; OUTPUT: psc_eq_status:
+;              (0) obtained equil.
+;              (1) cannot re-obtain equil. after [psc_eq_steps]
+;              (9) user-defined limit reached [psc_sl_limit]
+;             (-1) premature exit of this function
+;
+  psc_eq_status = -1
+  command
+    cycle 10  ; force system changes to occur before invoking SOLVE logic
+  end_command
+  ;
+  _cnt = 0
+  _exit = 0
+  loop while _exit = 0
+    _step0 = step
+    if psc_sr = 1 then
+      command
+        SOLVE aver=1e-30 max=@psc_eq_lim  steps=500
+      end_command
+    else
+      command
+        SET solve_ratio max
+        SOLVE ratio=@psc_eq_lim  steps=500
+      end_command
+    end_if
+    _solve_steps = step - _step0 - 1
+    _cnt = _cnt + _solve_steps
+    if _cnt >= psc_eq_steps then
+      psc_eq_status = 1
+      exit
+    end_if
+    ;
+    if _solve_steps # 500 then
+      _exit = 1
+    else
+      _exit = 0
+      if psc_sl_limit = 1 then
+        psc_eq_status = 9
+        exit
+      end_if
+    end_if
+  end_loop
+  psc_eq_status = 0
+end
+; ===================================================================
+def _psc_active
+;
+; ----- Return (1) iff at least one pbond is loaded above sigA.
+;
+  cp = contact_head
+  loop while cp # null
+    if md_pbond = 1 then  ; parallel bond present
+      pbp = c_pb(cp)
+      if pb_nstress(pbp) >= psc_sigA then
+        _psc_active = 1
+        exit
+      end_if
+    end_if
+    cp = c_next(cp)
+  end_loop
+  _psc_active = 0
+end
+; ===================================================================
+def _psc_corrode_pbonds
+;
+; ----- Assuming that current force distribution remains constant:
+;         degrade all pb-radii to reflect [_psc_tincr].
+;
+; INPUT:  _psc_tincr - global increment to [psc_time]
+;
+  cp = contact_head
+  loop while cp # null
+    if md_pbond = 1 then  ; parallel bond present
+      pbp = c_pb(cp)
+      pbrad = pb_rad(pbp) * min( b_rad(c_ball1(cp)), b_rad(c_ball2(cp)) )
+      ;
+      if _psc_beta_pbp = 1 then  ; {i: _psc_tincr; o: pb_beta}
+        _psc_corrode_pbp  ; {i: pb_beta}
+      end_if
+    end_if
+    cp = c_next(cp)
+  end_loop
+end
+; ===================================================================
+def _psc_beta_pbp
+;
+; ----- Compute pb-radius reduction factor of [pbp] for given time
+;       increment by assuming that the bond stress remains constant
+;       during the time increment.
+;       (This is an integration of the PSC-equation.)
+;       This function returns 0 or 1 s.t. 1-sig >= sigA
+;                                         0-sig < sigA  (no corrosion)
+;
+; INPUT:  psc_beta1  - beta1 parameter of PSC-model
+;         psc_beta2  - beta2 parameter of PSC-model
+;         psc_sigA   - activation stress of PSC-model (enter as positive)
+;         _psc_tincr - global increment to [psc_time]
+;         pbp        - pointer to parallel bond
+;         pbrad      - radius of parallel bond [pbp]
+;
+; OUTPUT: pb_beta - ratio of Rbar-prime over Rbar
+;
+  if pb_nstress(pbp) < psc_sigA then
+    _psc_beta_pbp = 0
+    exit
+  end_if
+  ;
+  _psc_beta_pbp = 1
+   _fval = psc_beta2 * pb_nstress(pbp) / pb_nstrength(pbp)
+  _gamma = psc_beta1 * exp(_fval)
+  pb_beta = (pbrad - 0.5*_gamma*_psc_tincr) / pbrad  ; may be <= 0.0
+end
+; ===================================================================
+def _psc_corrode_pbp
+;
+; ----- Degrade pb-radius of [pbp] by factor [pb_beta].
+;       This requires us to degrade both stiffness and forces carried.
+;       (The values of pb_nstress and pb_sstress will be updated based
+;       on the bond forces during each cycle in force-displ. function.)
+;       The pb-system will adjust to these changes during subsequent
+;       cycling in response to its BCs.
+;
+; INPUT: pbp     - pointer to parallel bond whose radius is to be degraded
+;        pb_beta - ratio of Rbar-prime over Rbar
+;
+  pb_rad(pbp) = pb_beta * pb_rad(pbp)
+  if dim = 2 then
+    pb_nforce(pbp) = pb_nforce(pbp) * pb_beta
+    pb_sforce(pbp) = pb_sforce(pbp) * pb_beta
+    pb_mom(pbp)    = pb_mom(pbp) * pb_beta^3
+  else  ; dim=3
+     _b2 = pb_beta^2
+     _b4 = pb_beta^4
+    pb_nforce(pbp) = pb_nforce(pbp) * _b2
+    pb_vsforce(pbp,1) = pb_vsforce(pbp,1) * _b2
+    pb_vsforce(pbp,2) = pb_vsforce(pbp,2) * _b2
+    pb_vsforce(pbp,3) = pb_vsforce(pbp,3) * _b2
+    pb_tmom(pbp) = pb_tmom(pbp) * _b4
+    pb_vmom(pbp,1) = pb_vmom(pbp,1) * _b4
+    pb_vmom(pbp,2) = pb_vmom(pbp,2) * _b4
+    pb_vmom(pbp,3) = pb_vmom(pbp,3) * _b4
+  end_if
+  ;
+  if pb_rad(pbp) < psc_imp then
+    psc_impnum = psc_impnum + 1
+    pb_nstrength(pbp) = 0.0  ; force to have normal failure on next step
+  end_if
+end
+; ===================================================================
+def _psc_incr0
+;
+; ----- Return estimated elapsed time until first pbond will fail.
+;         Return -1.0 if all bonds have infinite fail times.
+;
+  _tf = 1e20
+  cp = contact_head
+  loop while cp # null
+    if md_pbond = 1 then  ; parallel bond present
+      pbp = c_pb(cp)
+      pbrad = pb_rad(pbp) * min( b_rad(c_ball1(cp)), b_rad(c_ball2(cp)) )
+      ;
+      _ttf = _psc_tincr_pbp
+      if _ttf # -1.0 then  ; finite time-to-failure
+        _tf = min( _tf, _ttf )
+      end_if
+    end_if
+    cp = c_next(cp)
+  end_loop
+  _psc_incr0 = _tf
+end
+; ===================================================================
+def _psc_tincr_pbp
+;
+; ----- Return the estimated time-to-failure for [pbp].  The pbond may
+;         fail by implosion if the bond is activated.  If the estimated
+;         time-to-failure is infinity, then return -1.0.
+;
+; INPUT:  pbp       - pointer to parallel bond
+;         pbrad     - radius of parallel bond [pbp]
+;         psc_thick - thickness of cylinders
+;
+  if pb_nstress(pbp) < psc_sigA then
+    _psc_tincr_pbp = -1.0
+    exit
+  end_if
+  ;
+  if dim = 2 then
+    _bmax = _psc_bmax2d
+  else
+    _bmax = _psc_bmax3d
+  end_if
+  ;
+  _bmax = max( _bmax, psc_imp )
+  ;
+    _fval = psc_beta2 * pb_nstress(pbp) / pb_nstrength(pbp)
+   _gamma = psc_beta1 * exp(_fval)
+  _psc_tincr_pbp = 2.0*pbrad*(1.0 - _bmax) / _gamma
+end
+; ===================================================================
+def _psc_bmax2d
+;
+; ----- Return max beta-value for first failure mode to be reached as
+;         result of slowly decreasing pbrad.  If failure would not
+;         occur for either case, then return -1.0.  Output value in
+;         range (0, 1).
+;
+; INPUT:  pbp       - pointer to parallel bond
+;         pbrad     - radius of parallel bond [pbp]
+;         psc_thick - thickness of cylinders
+;
+; INTERNAL: _b{tau,sig} - beta for shear and tensile fail conditions,
+;                           -1.0 if no solution
+;
+  _btau = -1.0
+   _fval = abs(pb_sforce(pbp))/(pbrad * 2.0 * pb_sstrength(pbp) * psc_thick)
+   if _fval > 0.0 then  ; no tolerance, allow very small value
+     _btau = _fval
+   end_if
+  ;
+  ; quadratic eqn. for [_bsig], only one root is >0, else no solution.
+     _sq = pb_nforce(pbp)^2
+     _sq = _sq + 24.0*abs(pb_mom(pbp))*pb_nstrength(pbp)*psc_thick
+    _sq = sqrt( _sq )
+    _denom = 4.0*pb_nstrength(pbp)*psc_thick
+   _root1 = (-pb_nforce(pbp) + _sq)/(_denom * pbrad)
+   _root2 = (-pb_nforce(pbp) - _sq)/(_denom * pbrad)
+  _bsig = -1.0
+   if _root1 > 0.0 then
+     _bsig = _root1
+   end_if
+   if _root2 > 0.0 then
+     _bsig = _root2
+   end_if
+  ;
+  _psc_bmax2d = max( _btau, _bsig )
+end
+; ===================================================================
+def _psc_bmax3d
+;
+; ----- Return max beta-value for first failure mode to be reached as
+;         result of slowly decreasing pbrad.  If failure would not
+;         occur for either case, then return -1.0.  Output value in
+;         range [psc_imp, 1).
+;
+; INPUT:  pbp, pbrad, psc_imp
+;
+; INTERNAL: _b{tau,sig} - beta for shear and tensile fail conditions,
+;                           -1.0 if no solution
+;
+  _bsig = -1.0
+  _psc_bs_mode = 0
+  _psc_bs_beta = psc_imp
+  if _psc_bs_f >= 0.0 then
+    _psc_bs_beta = 1.0
+    if _psc_bs_f < 0.0 then
+      _bsig = _psc_bs
+    end_if
+  end_if
+  ;
+  _btau = -1.0
+  _psc_bs_mode = 1
+  _psc_bs_beta = psc_imp
+  if _psc_bs_f >= 0.0 then
+    _psc_bs_beta = 1.0
+    if _psc_bs_f < 0.0 then
+      _btau = _psc_bs
+    end_if
+  end_if
+  ;
+  _psc_bmax3d = max( _btau, _bsig )
+end
+; ===================================================================
+def _psc_bs
+;
+; ----- Run bisection algorithm, return value of beta.
+;
+; INPUT: _psc_bs_mode - {0,1}={tensile,shear} fail criterion
+;
+  _b0 = psc_imp
+  _b1 = 1.0
+  _psc_bs_beta = 0.5*(_b0 + _b1)
+  _obj = _psc_bs_f
+  loop while abs(_obj) > 1e-4
+    if _obj > 0.0 then
+      _b0 = _psc_bs_beta
+    else
+      _b1 = _psc_bs_beta
+    end_if
+    _psc_bs_beta = 0.5*(_b0 + _b1)
+    _obj = _psc_bs_f
+  end_loop
+  _psc_bs = _psc_bs_beta
+end
+; ===================================================================
+def _psc_bs_f
+  if _psc_bs_mode = 1 then
+    _psc_bs_f = _psc_bs_ftau
+  else
+    _psc_bs_f = _psc_bs_fsig
+  end_if
+end
+; ===================================================================
+def _psc_bs_fsig
+;
+; ----- Objective function for tensile failure condition.
+;
+; INPUT: _psc_bs_beta, pbp, pbrad
+;
+   _fval = sqrt( pb_vmom(pbp,1)^2 + pb_vmom(pbp,2)^2 + pb_vmom(pbp,3)^2 )
+   _fval = _fval*4.0 / (_psc_bs_beta*pbrad)
+   _fval = _fval - pb_nforce(pbp)
+   _fval = _fval / (pi*_psc_bs_beta*_psc_bs_beta*pbrad*pbrad)
+  _psc_bs_fsig = _fval - pb_nstrength(pbp)
+end
+; ===================================================================
+def _psc_bs_ftau
+;
+; ----- Objective function for shear failure condition.
+;
+; INPUT: _psc_bs_beta, pbp, pbrad
+;
+   _fval = pb_vsforce(pbp,1)^2 + pb_vsforce(pbp,2)^2 + pb_vsforce(pbp,3)^2
+   _fval = sqrt(_fval) + (2.0*abs(pb_tmom(pbp)) / (_psc_bs_beta*pbrad))
+   _fval = _fval / (pi*_psc_bs_beta*_psc_bs_beta*pbrad*pbrad)
+  _psc_bs_ftau = _fval - pb_sstrength(pbp)
+end
+; ===================================================================
+return
+;EOF: psc.fis
