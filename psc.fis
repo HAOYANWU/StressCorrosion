@@ -19,9 +19,9 @@ def psc_init
 ;        psc_imp   - implosion multiplier
 ;                      minimum allowed value for pb_rad(pbp)
 ;        psc_sr    - boolean, defines use of [psc_eq_lim] as
-;                      0: {SET solve_ratio max
+;                      0: {SET solve_ratio math.max
 ;                          SOLVE ratio=@psc_eq_lim}
-;                      1: SOLVE aver=1e-30 max=@psc_eq_lim
+;                      1: SOLVE aver=1e-30 math.max=@psc_eq_lim
 ;
 ; OUTPUT: psc_time   - accumulated sc-time
 ;         psc_impnum - number of pbonds broken from condition:
@@ -51,7 +51,7 @@ def _psc_chk_mfac
 ;       include this factor.
 ;
 ;       Potyondy, D. (2007) "Simulating Stress Corrosion with a Bonded-
-;       Particle Model for Rock," Int. J. Rock Mech. & Min. Sci., 44(5),
+;       Particle Model for Rock," Int. J. Rock Mech. & math.min. Sci., 44(5),
 ;       677-691.
 ;
   cp = contact_head
@@ -59,7 +59,7 @@ def _psc_chk_mfac
     if md_pbond = 1 then  ; parallel bond present
       pbp = c_pb(cp)
       _mfac = pb_mfac(pbp)
-      if abs( _mfac - 1.0 ) > 1e-10 then
+      if math.abs( _mfac - 1.0 ) > 1e-10 then
         _str = 'PSC_Model requires all pbond MomentContribFacs = 1.0, '
         _str = _str + 'but at least one of them is not 1.0.'
         error = _str
@@ -242,11 +242,11 @@ def psc_eq
     _step0 = step
     if psc_sr = 1 then
       command
-        SOLVE aver=1e-30 max=@psc_eq_lim  steps=500
+        SOLVE aver=1e-30 math.max=@psc_eq_lim  steps=500
       end_command
     else
       command
-        SET solve_ratio max
+        SET solve_ratio math.max
         SOLVE ratio=@psc_eq_lim  steps=500
       end_command
     end_if
@@ -299,7 +299,7 @@ def _psc_corrode_pbonds
   loop while cp # null
     if md_pbond = 1 then  ; parallel bond present
       pbp = c_pb(cp)
-      pbrad = pb_rad(pbp) * min( b_rad(c_ball1(cp)), b_rad(c_ball2(cp)) )
+      pbrad = pb_rad(pbp) * math.min( ball.radius(c_ball1(cp)), ball.radius(c_ball2(cp)) )
       ;
       if _psc_beta_pbp = 1 then  ; {i: _psc_tincr; o: pb_beta}
         _psc_corrode_pbp  ; {i: pb_beta}
@@ -334,7 +334,7 @@ def _psc_beta_pbp
   ;
   _psc_beta_pbp = 1
    _fval = psc_beta2 * pb_nstress(pbp) / pb_nstrength(pbp)
-  _gamma = psc_beta1 * exp(_fval)
+  _gamma = psc_beta1 * math.exp(_fval)
   pb_beta = (pbrad - 0.5*_gamma*_psc_tincr) / pbrad  ; may be <= 0.0
 end
 ; ===================================================================
@@ -384,11 +384,11 @@ def _psc_incr0
   loop while cp # null
     if md_pbond = 1 then  ; parallel bond present
       pbp = c_pb(cp)
-      pbrad = pb_rad(pbp) * min( b_rad(c_ball1(cp)), b_rad(c_ball2(cp)) )
+      pbrad = pb_rad(pbp) * math.min( ball.radius(c_ball1(cp)), ball.radius(c_ball2(cp)) )
       ;
       _ttf = _psc_tincr_pbp
       if _ttf # -1.0 then  ; finite time-to-failure
-        _tf = min( _tf, _ttf )
+        _tf = math.min( _tf, _ttf )
       end_if
     end_if
     cp = c_next(cp)
@@ -417,16 +417,16 @@ def _psc_tincr_pbp
     _bmax = _psc_bmax3d
   end_if
   ;
-  _bmax = max( _bmax, psc_imp )
+  _bmax = math.max( _bmax, psc_imp )
   ;
     _fval = psc_beta2 * pb_nstress(pbp) / pb_nstrength(pbp)
-   _gamma = psc_beta1 * exp(_fval)
+   _gamma = psc_beta1 * math.exp(_fval)
   _psc_tincr_pbp = 2.0*pbrad*(1.0 - _bmax) / _gamma
 end
 ; ===================================================================
 def _psc_bmax2d
 ;
-; ----- Return max beta-value for first failure mode to be reached as
+; ----- Return math.max beta-value for first failure mode to be reached as
 ;         result of slowly decreasing pbrad.  If failure would not
 ;         occur for either case, then return -1.0.  Output value in
 ;         range (0, 1).
@@ -439,15 +439,15 @@ def _psc_bmax2d
 ;                           -1.0 if no solution
 ;
   _btau = -1.0
-   _fval = abs(pb_sforce(pbp))/(pbrad * 2.0 * pb_sstrength(pbp) * psc_thick)
+   _fval = math.abs(pb_sforce(pbp))/(pbrad * 2.0 * pb_sstrength(pbp) * psc_thick)
    if _fval > 0.0 then  ; no tolerance, allow very small value
      _btau = _fval
    end_if
   ;
   ; quadratic eqn. for [_bsig], only one root is >0, else no solution.
      _sq = pb_nforce(pbp)^2
-     _sq = _sq + 24.0*abs(pb_mom(pbp))*pb_nstrength(pbp)*psc_thick
-    _sq = sqrt( _sq )
+     _sq = _sq + 24.0*math.abs(pb_mom(pbp))*pb_nstrength(pbp)*psc_thick
+    _sq = math.sqrt( _sq )
     _denom = 4.0*pb_nstrength(pbp)*psc_thick
    _root1 = (-pb_nforce(pbp) + _sq)/(_denom * pbrad)
    _root2 = (-pb_nforce(pbp) - _sq)/(_denom * pbrad)
@@ -459,12 +459,12 @@ def _psc_bmax2d
      _bsig = _root2
    end_if
   ;
-  _psc_bmax2d = max( _btau, _bsig )
+  _psc_bmax2d = math.max( _btau, _bsig )
 end
 ; ===================================================================
 def _psc_bmax3d
 ;
-; ----- Return max beta-value for first failure mode to be reached as
+; ----- Return math.max beta-value for first failure mode to be reached as
 ;         result of slowly decreasing pbrad.  If failure would not
 ;         occur for either case, then return -1.0.  Output value in
 ;         range [psc_imp, 1).
@@ -494,7 +494,7 @@ def _psc_bmax3d
     end_if
   end_if
   ;
-  _psc_bmax3d = max( _btau, _bsig )
+  _psc_bmax3d = math.max( _btau, _bsig )
 end
 ; ===================================================================
 def _psc_bs
@@ -507,7 +507,7 @@ def _psc_bs
   _b1 = 1.0
   _psc_bs_beta = 0.5*(_b0 + _b1)
   _obj = _psc_bs_f
-  loop while abs(_obj) > 1e-4
+  loop while math.abs(_obj) > 1e-4
     if _obj > 0.0 then
       _b0 = _psc_bs_beta
     else
@@ -533,7 +533,7 @@ def _psc_bs_fsig
 ;
 ; INPUT: _psc_bs_beta, pbp, pbrad
 ;
-   _fval = sqrt( pb_vmom(pbp,1)^2 + pb_vmom(pbp,2)^2 + pb_vmom(pbp,3)^2 )
+   _fval = math.sqrt( pb_vmom(pbp,1)^2 + pb_vmom(pbp,2)^2 + pb_vmom(pbp,3)^2 )
    _fval = _fval*4.0 / (_psc_bs_beta*pbrad)
    _fval = _fval - pb_nforce(pbp)
    _fval = _fval / (pi*_psc_bs_beta*_psc_bs_beta*pbrad*pbrad)
@@ -547,7 +547,7 @@ def _psc_bs_ftau
 ; INPUT: _psc_bs_beta, pbp, pbrad
 ;
    _fval = pb_vsforce(pbp,1)^2 + pb_vsforce(pbp,2)^2 + pb_vsforce(pbp,3)^2
-   _fval = sqrt(_fval) + (2.0*abs(pb_tmom(pbp)) / (_psc_bs_beta*pbrad))
+   _fval = math.sqrt(_fval) + (2.0*math.abs(pb_tmom(pbp)) / (_psc_bs_beta*pbrad))
    _fval = _fval / (pi*_psc_bs_beta*_psc_bs_beta*pbrad*pbrad)
   _psc_bs_ftau = _fval - pb_sstrength(pbp)
 end
